@@ -8,9 +8,20 @@
     :root { color-scheme: dark; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; line-height: 1.35; }
     h1 { margin: 0 0 10px; font-size: 20px; }
-    .row { display: grid; gap: 12px; grid-template-columns: 1.1fr 0.9fr; align-items: start; }
-    textarea { width: 100%; min-height: 220px; padding: 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: #eee; resize: vertical; }
+    h2 { margin: 0 0 8px; font-size: 14px; color: #ddd; }
+    .grid { display: grid; gap: 12px; grid-template-columns: 1.1fr 0.9fr; align-items: start; }
     .panel { border: 1px solid #333; border-radius: 12px; padding: 12px; background: #0e0e0e; }
+    textarea, input[type="text"] {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #333;
+      background: #111;
+      color: #eee;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    textarea { min-height: 220px; }
     .controls { display: grid; gap: 10px; }
     .control { display: grid; gap: 6px; }
     label { font-size: 13px; color: #bbb; }
@@ -37,13 +48,20 @@
     }
     .small { font-size: 12px; }
     .hint { margin-top: 8px; color: #9a9a9a; font-size: 12px; }
+    .row2 { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; align-items: start; }
+    .statusLine { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .statusDot { width: 10px; height: 10px; border-radius: 999px; border: 1px solid #333; }
+    .dotGood { background: #1f5; }
+    .dotBad { background: #f33; }
+    .dotWarn { background: #fc3; }
   </style>
 </head>
 <body>
   <h1>Fuzzy item matcher (Levenshtein) → totals</h1>
 
-  <div class="row">
-    <div>
+  <div class="grid">
+    <div class="panel">
+      <h2>Input</h2>
       <textarea id="input" spellcheck="false" placeholder='Type things like:
 2 item1, 9 itm2, 23 item 2, 2932 item whatever
 
@@ -52,11 +70,12 @@ Also works with newlines:
 12 itn2
 '></textarea>
       <div class="hint">
-        Parsing rule: split on commas/newlines/semicolons. Each chunk can start with a number (quantity). If no quantity, assumes 1.
+        Auto-updates as you type. Parsing: split on commas/newlines/semicolons. Each chunk can start with a number (quantity). If no quantity, assumes 1.
       </div>
     </div>
 
     <div class="panel">
+      <h2>Matching settings</h2>
       <div class="controls">
         <div class="control">
           <label for="threshold">Match strictness (max normalized distance): <span id="thresholdLabel" class="mono"></span></label>
@@ -73,9 +92,8 @@ Also works with newlines:
         </div>
 
         <div class="btns">
-          <button id="computeBtn">Compute</button>
-          <button id="exampleBtn">Load example</button>
-          <button id="clearBtn">Clear</button>
+          <button id="exampleBtn">Load example input</button>
+          <button id="clearBtn">Clear input</button>
         </div>
 
         <div class="totals">
@@ -83,6 +101,49 @@ Also works with newlines:
           <div class="muted small">Matched lines: <span id="matchedCount">0</span> • Unmatched lines: <span id="unmatchedCount">0</span></div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="row2" style="margin-top:12px;">
+    <div class="panel">
+      <h2>Price table (editable)</h2>
+      <div class="statusLine">
+        <span class="statusDot" id="catalogDot"></span>
+        <span class="small" id="catalogStatus" class="muted"></span>
+        <span class="pill mono" id="catalogCountPill"></span>
+      </div>
+
+      <div class="hint" style="margin-top:8px;">
+        Two supported formats (auto-detected):
+        <br/>• <span class="mono">JSON</span>: array of <span class="mono">{ "name", "price", "aliases":[...] }</span>
+        <br/>• <span class="mono">Pipe text</span> (one per line): <span class="mono">Name | 12.34 | alias1; alias2; alias3</span>
+        <br/>Price can be dollars (12.34) or cents (1234) if you set <span class="mono">priceCents</span> in JSON.
+      </div>
+
+      <textarea id="catalog" spellcheck="false"></textarea>
+
+      <div class="btns" style="margin-top:10px;">
+        <button id="resetCatalogBtn">Reset catalog</button>
+        <button id="exportCatalogBtn">Copy catalog</button>
+        <button id="wipeStorageBtn">Forget saved catalog</button>
+      </div>
+      <div class="hint">Catalog auto-saves in your browser (localStorage). Share the page and others can paste their own.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Per-item summary</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Total qty</th>
+            <th>Unit price</th>
+            <th>Subtotal</th>
+          </tr>
+        </thead>
+        <tbody id="summaryBody"></tbody>
+      </table>
+      <div class="hint">Only includes matched lines.</div>
     </div>
   </div>
 
@@ -103,20 +164,25 @@ Also works with newlines:
   </table>
 
 <script>
-/**
- * 1) DEFINE YOUR ITEM DATABASE HERE
- *    - priceCents avoids float issues
- *    - aliases are what users might type
- */
-const items = [
-  { name: "Item 1", priceCents: 1250, aliases: ["item1", "itm1", "it1", "one"] },
-  { name: "Item 2", priceCents: 3999, aliases: ["item2", "itm2", "it 2", "two", "itn2"] },
-  { name: "Iron",   priceCents: 250,  aliases: ["fe", "iron bar", "ironbar", "irn"] },
-  { name: "Gold",   priceCents: 900,  aliases: ["au", "gld", "gold bar", "goldbar"] },
-  { name: "Coal",   priceCents: 75,   aliases: ["charcoal", "cl", "kol"] },
-];
+/* ------------------------------
+   Defaults
+------------------------------ */
 
-/** Normalize for matching */
+const defaultCatalogText = `[
+  { "name": "Void aura", "price": 6800000, "aliases": ["void", "va", "voidaura", "v"] },
+  { "name": "Cursed Energy", "price": 950000, "aliases": ["curse", "cursed", "ce", "c"] },
+  { "name": "Gold Retros",   "price": 3300000,  "aliases": ["gold", "gr", "gold retros", "gret"] },
+  { "name": "Ember Aura",   "price": 600000,  "aliases": ["ember", "e", "e aura"] },
+  { "name": "Red Retros",   "price": 0.75,  "aliases": ["rr", "reds", "red retros", "r"] },
+  { "name": "Red Shoes",   "price": 0.75,  "aliases": ["charcoal", "cl", "kol"] },
+  { "name": "Godspeed",   "price": 0.75,  "aliases": ["godspeed", "gs", "god"] },
+  { "name": "Thanos Gauntlent",   "price": 0.75,  "aliases": ["thanos", "tg", "gauntlet", "thanos"] }
+]`;
+
+/* ------------------------------
+   Helpers
+------------------------------ */
+
 function normalize(s) {
   return String(s)
     .toLowerCase()
@@ -125,18 +191,14 @@ function normalize(s) {
     .replace(/\s+/g, " ");
 }
 
-/** Fast-ish Levenshtein (two-row DP) */
 function levenshtein(a, b) {
   if (a === b) return 0;
   const alen = a.length, blen = b.length;
   if (alen === 0) return blen;
   if (blen === 0) return alen;
 
-  // Ensure b is the shorter one to minimize memory? (optional)
-  // We'll keep as-is but use two rows.
   let prev = new Array(blen + 1);
   let curr = new Array(blen + 1);
-
   for (let j = 0; j <= blen; j++) prev[j] = j;
 
   for (let i = 1; i <= alen; i++) {
@@ -162,34 +224,145 @@ function formatMoney(cents) {
   return `${sign}$${dollars.toLocaleString("en-US")}.${String(rem).padStart(2, "0")}`;
 }
 
-/** Build candidates: every item name + alias maps back to canonical item */
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+/* ------------------------------
+   Catalog parsing (JSON or pipe)
+------------------------------ */
+
+function parseMoneyToCents(v) {
+  // Accept: number, "12.34", "12", "$12.34"
+  if (typeof v === "number") {
+    // Treat 12.34 as dollars
+    return Math.round(v * 100);
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+
+  // If looks like integer and large-ish, assume dollars anyway unless explicitly "priceCents".
+  // For JSON you can set priceCents to avoid ambiguity.
+  const cleaned = s.replace(/[\$,]/g, "");
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null;
+
+  if (cleaned.includes(".")) {
+    return Math.round(parseFloat(cleaned) * 100);
+  }
+  // no decimal
+  return Math.round(parseInt(cleaned, 10) * 100);
+}
+
+function parseCatalog(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { ok: false, items: [], error: "Catalog is empty." };
+
+  // Try JSON first if it starts like JSON
+  if (raw.startsWith("[") || raw.startsWith("{")) {
+    try {
+      const obj = JSON.parse(raw);
+      const arr = Array.isArray(obj) ? obj : (obj && Array.isArray(obj.items) ? obj.items : null);
+      if (!arr) return { ok: false, items: [], error: "JSON must be an array, or an object with an 'items' array." };
+
+      const out = [];
+      for (const it of arr) {
+        if (!it || typeof it !== "object") continue;
+
+        const name = String(it.name ?? "").trim();
+        if (!name) continue;
+
+        let priceCents = null;
+
+        if (it.priceCents != null) {
+          const pc = Number(it.priceCents);
+          if (Number.isFinite(pc)) priceCents = Math.round(pc);
+        } else if (it.price != null) {
+          priceCents = parseMoneyToCents(it.price);
+        } else if (it.priceDollars != null) {
+          priceCents = parseMoneyToCents(it.priceDollars);
+        }
+
+        if (!Number.isFinite(priceCents) || priceCents == null) continue;
+
+        const aliases = Array.isArray(it.aliases) ? it.aliases.map(a => String(a).trim()).filter(Boolean) : [];
+        out.push({ name, priceCents, aliases });
+      }
+
+      if (out.length === 0) return { ok: false, items: [], error: "No valid items found in JSON." };
+      return { ok: true, items: out, format: "json" };
+    } catch (e) {
+      return { ok: false, items: [], error: "JSON parse error: " + e.message };
+    }
+  }
+
+  // Pipe format: Name | price | alias1; alias2; alias3
+  const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const out = [];
+  for (const line of lines) {
+    if (line.startsWith("#")) continue;
+    const parts = line.split("|").map(p => p.trim());
+    if (parts.length < 2) continue;
+
+    const name = parts[0];
+    const priceStr = parts[1];
+    const priceCents = parseMoneyToCents(priceStr);
+    if (!name || !Number.isFinite(priceCents) || priceCents == null) continue;
+
+    let aliases = [];
+    if (parts[2]) {
+      aliases = parts[2]
+        .split(/[,;]+/)
+        .map(a => a.trim())
+        .filter(Boolean);
+    }
+    out.push({ name, priceCents, aliases });
+  }
+
+  if (out.length === 0) {
+    return { ok: false, items: [], error: "No valid items found. Use JSON or: Name | 12.34 | alias1; alias2" };
+  }
+  return { ok: true, items: out, format: "pipe" };
+}
+
+/* ------------------------------
+   Matching
+------------------------------ */
+
 function buildCandidates(items) {
   const candidates = [];
   for (const it of items) {
     const all = [it.name, ...(it.aliases || [])];
     for (const raw of all) {
+      const cn = normalize(raw);
+      if (!cn) continue;
       candidates.push({
         canonical: it.name,
         priceCents: it.priceCents,
         candidateRaw: raw,
-        candidateNorm: normalize(raw),
+        candidateNorm: cn,
       });
     }
   }
   return candidates;
 }
-const candidates = buildCandidates(items);
 
-/**
- * Match query -> best canonical item by min normalized distance.
- * Returns:
- *  { ok, canonical, priceCents, usedAlias, distance, normDistance, top[] }
- */
-function matchItem(query, topK) {
+function matchItem(query, candidates, topK) {
   const qNorm = normalize(query);
-  if (!qNorm) {
-    return { ok: false, reason: "Empty name", top: [] };
-  }
+  if (!qNorm) return { ok: false, reason: "Empty name", top: [] };
+  if (!candidates.length) return { ok: false, reason: "Empty catalog", top: [] };
 
   let best = null;
   const scored = [];
@@ -208,14 +381,11 @@ function matchItem(query, topK) {
     };
     scored.push(rec);
 
-    if (!best || normDist < best.normDistance) {
-      best = rec;
-    }
+    if (!best || normDist < best.normDistance) best = rec;
   }
 
   scored.sort((a, b) => a.normDistance - b.normDistance);
 
-  // Collapse duplicates by canonical, keeping best alias per canonical
   const uniqueTop = [];
   const seen = new Set();
   for (const s of scored) {
@@ -225,14 +395,13 @@ function matchItem(query, topK) {
     if (uniqueTop.length >= topK) break;
   }
 
-  return {
-    ok: true,
-    ...best,
-    top: uniqueTop,
-  };
+  return { ok: true, ...best, top: uniqueTop };
 }
 
-/** Parse chunks like "2 item1" or "9 itm2" or "item 2" */
+/* ------------------------------
+   Input parsing
+------------------------------ */
+
 function parseInput(text) {
   const chunks = String(text)
     .split(/[\n,;]+/g)
@@ -240,16 +409,13 @@ function parseInput(text) {
     .filter(Boolean);
 
   const entries = [];
-
   for (const chunk of chunks) {
-    // Quantity first (supports "2x item", "2 * item", "2 item", "2.5 item")
-    // If no leading number => qty=1, name=chunk
+    // Supports: "2 item", "2x item", "2 * item", "2× item", "2.5 item"
     const m = chunk.match(/^\s*(\d+(?:\.\d+)?)\s*(?:x|\*|\u00D7)?\s*(.+?)\s*$/i);
     let qty = 1;
     let namePart = chunk;
 
     if (m) {
-      // Only treat it as qty+name if namePart isn't empty
       const q = Number(m[1]);
       const np = (m[2] || "").trim();
       if (Number.isFinite(q) && q > 0 && np.length > 0) {
@@ -260,36 +426,98 @@ function parseInput(text) {
 
     entries.push({ raw: chunk, qty, namePart });
   }
-
   return entries;
 }
 
+/* ------------------------------
+   UI state
+------------------------------ */
+
+const els = {
+  input: document.getElementById("input"),
+  threshold: document.getElementById("threshold"),
+  thresholdLabel: document.getElementById("thresholdLabel"),
+  topK: document.getElementById("topK"),
+  grandTotal: document.getElementById("grandTotal"),
+  matchedCount: document.getElementById("matchedCount"),
+  unmatchedCount: document.getElementById("unmatchedCount"),
+  tbody: document.getElementById("tbody"),
+  summaryBody: document.getElementById("summaryBody"),
+  catalog: document.getElementById("catalog"),
+  catalogDot: document.getElementById("catalogDot"),
+  catalogStatus: document.getElementById("catalogStatus"),
+  catalogCountPill: document.getElementById("catalogCountPill"),
+};
+
+let catalogItems = [];
+let candidates = [];
+let catalogOk = false;
+
+function setCatalogStatus(ok, msg, count) {
+  els.catalogDot.className = "statusDot " + (ok ? "dotGood" : "dotBad");
+  els.catalogStatus.textContent = msg;
+  els.catalogCountPill.textContent = ok ? `${count} items loaded` : "0 items loaded";
+}
+
+function loadCatalogFromStorageOrDefault() {
+  const saved = localStorage.getItem("itemMatcherCatalog");
+  els.catalog.value = saved ?? defaultCatalogText;
+}
+
+function saveCatalogToStorage() {
+  localStorage.setItem("itemMatcherCatalog", els.catalog.value);
+}
+
+function rebuildCatalogAndCandidates() {
+  const parsed = parseCatalog(els.catalog.value);
+  if (!parsed.ok) {
+    catalogItems = [];
+    candidates = [];
+    catalogOk = false;
+    setCatalogStatus(false, parsed.error, 0);
+    compute(); // still compute; will show unmatched
+    return;
+  }
+
+  catalogItems = parsed.items;
+  candidates = buildCandidates(catalogItems);
+  catalogOk = true;
+  setCatalogStatus(true, `Catalog OK (${parsed.format.toUpperCase()})`, catalogItems.length);
+  compute();
+}
+
+/* ------------------------------
+   Compute + render
+------------------------------ */
+
 function compute() {
-  const inputEl = document.getElementById("input");
-  const threshold = Number(document.getElementById("threshold").value);
-  const topK = Number(document.getElementById("topK").value);
+  const threshold = Number(els.threshold.value);
+  const topK = Number(els.topK.value);
 
-  document.getElementById("thresholdLabel").textContent = threshold.toFixed(2);
+  els.thresholdLabel.textContent = threshold.toFixed(2);
 
-  const tbody = document.getElementById("tbody");
-  tbody.innerHTML = "";
+  els.tbody.innerHTML = "";
+  els.summaryBody.innerHTML = "";
 
-  const entries = parseInput(inputEl.value);
+  const entries = parseInput(els.input.value);
 
   let grandTotal = 0;
   let matchedCount = 0;
   let unmatchedCount = 0;
 
+  // summary accumulator by canonical
+  const summary = new Map(); // canonical -> {qty, unitCents, subtotalCents}
+
   for (const e of entries) {
-    const m = matchItem(e.namePart, Math.max(0, topK));
+    const m = matchItem(e.namePart, candidates, Math.max(0, topK));
 
     let matched = false;
     let canonical = "";
     let usedAlias = "";
     let unitCents = 0;
     let lineCents = 0;
-    let distText = "";
-    let notes = "";
+    let distHtml = "";
+    let notesHtml = "";
 
     if (m.ok && m.normDistance <= threshold) {
       matched = true;
@@ -301,25 +529,29 @@ function compute() {
       matchedCount++;
 
       const quality = m.normDistance <= threshold * 0.5 ? "good" : "muted";
-      distText = `<span class="${quality} mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`;
-      notes = `Matched via: <span class="pill mono">${escapeHtml(usedAlias)}</span>`;
+      distHtml = `<span class="${quality} mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`;
+      notesHtml = `Matched via: <span class="pill mono">${escapeHtml(usedAlias)}</span>`;
+
+      const prev = summary.get(canonical) ?? { qty: 0, unitCents, subtotalCents: 0 };
+      prev.qty += e.qty;
+      prev.unitCents = unitCents;
+      prev.subtotalCents += lineCents;
+      summary.set(canonical, prev);
     } else {
-      unmatched = true;
       unmatchedCount++;
-
-      distText = m.ok
-        ? `<span class="bad mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`
-        : `<span class="bad mono">—</span>`;
-
       if (!m.ok) {
-        notes = `<span class="bad">Couldn’t parse a name.</span>`;
-      } else if (topK > 0 && m.top?.length) {
-        const sug = m.top
-          .map(s => `${escapeHtml(s.canonical)} <span class="muted mono">(${s.normDistance.toFixed(3)})</span>`)
-          .join("<br/>");
-        notes = `<span class="bad">Unmatched (too far).</span><br/><span class="muted">Suggestions:</span><br/>${sug}`;
+        distHtml = `<span class="bad mono">—</span>`;
+        notesHtml = `<span class="bad">${escapeHtml(m.reason || "Unmatched")}</span>`;
       } else {
-        notes = `<span class="bad">Unmatched (too far).</span>`;
+        distHtml = `<span class="bad mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`;
+        if (topK > 0 && m.top?.length) {
+          const sug = m.top.map(s =>
+            `${escapeHtml(s.canonical)} <span class="muted mono">(${s.normDistance.toFixed(3)})</span> <span class="muted">(${formatMoney(s.priceCents)})</span>`
+          ).join("<br/>");
+          notesHtml = `<span class="bad">Unmatched (too far).</span><br/><span class="muted">Suggestions:</span><br/>${sug}`;
+        } else {
+          notesHtml = `<span class="bad">Unmatched (too far).</span>`;
+        }
       }
     }
 
@@ -331,32 +563,55 @@ function compute() {
       <td>${matched ? `<span class="good">${escapeHtml(canonical)}</span>` : `<span class="bad">—</span>`}</td>
       <td class="mono">${matched ? formatMoney(unitCents) : `<span class="muted">—</span>`}</td>
       <td class="mono">${matched ? formatMoney(lineCents) : `<span class="muted">—</span>`}</td>
-      <td>${distText}</td>
-      <td>${notes}</td>
+      <td>${distHtml}</td>
+      <td>${notesHtml}</td>
     `;
-    tbody.appendChild(tr);
+    els.tbody.appendChild(tr);
   }
 
-  document.getElementById("grandTotal").textContent = formatMoney(grandTotal);
-  document.getElementById("matchedCount").textContent = String(matchedCount);
-  document.getElementById("unmatchedCount").textContent = String(unmatchedCount);
+  // Render summary
+  const sorted = Array.from(summary.entries())
+    .sort((a, b) => b[1].subtotalCents - a[1].subtotalCents);
+
+  if (sorted.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="muted" colspan="4">No matched items yet.</td>`;
+    els.summaryBody.appendChild(tr);
+  } else {
+    for (const [name, s] of sorted) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${escapeHtml(name)}</td>
+        <td class="mono">${escapeHtml(String(s.qty))}</td>
+        <td class="mono">${formatMoney(s.unitCents)}</td>
+        <td class="mono">${formatMoney(s.subtotalCents)}</td>
+      `;
+      els.summaryBody.appendChild(tr);
+    }
+  }
+
+  els.grandTotal.textContent = formatMoney(grandTotal);
+  els.matchedCount.textContent = String(matchedCount);
+  els.unmatchedCount.textContent = String(unmatchedCount);
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
+/* ------------------------------
+   Wire up auto-update
+------------------------------ */
 
-document.getElementById("computeBtn").addEventListener("click", compute);
-document.getElementById("threshold").addEventListener("input", compute);
-document.getElementById("topK").addEventListener("input", compute);
+const computeDebounced = debounce(compute, 80);
+const catalogDebounced = debounce(() => {
+  saveCatalogToStorage();
+  rebuildCatalogAndCandidates();
+}, 120);
+
+els.input.addEventListener("input", computeDebounced);
+els.threshold.addEventListener("input", computeDebounced);
+els.topK.addEventListener("input", computeDebounced);
+els.catalog.addEventListener("input", catalogDebounced);
 
 document.getElementById("exampleBtn").addEventListener("click", () => {
-  document.getElementById("input").value =
+  els.input.value =
 `2 item1, 9 itm2, 23 item 2, 2932 item whatever
 5 iron
 12 itn2
@@ -366,12 +621,40 @@ document.getElementById("exampleBtn").addEventListener("click", () => {
 });
 
 document.getElementById("clearBtn").addEventListener("click", () => {
-  document.getElementById("input").value = "";
+  els.input.value = "";
   compute();
 });
 
-// Initialize label and compute once
-compute();
+document.getElementById("resetCatalogBtn").addEventListener("click", () => {
+  els.catalog.value = defaultCatalogText;
+  saveCatalogToStorage();
+  rebuildCatalogAndCandidates();
+});
+
+document.getElementById("exportCatalogBtn").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(els.catalog.value);
+    els.catalogStatus.textContent = "Copied catalog to clipboard.";
+    els.catalogDot.className = "statusDot dotWarn";
+    setTimeout(() => rebuildCatalogAndCandidates(), 700);
+  } catch {
+    els.catalogStatus.textContent = "Couldn’t copy (clipboard blocked). Select all & copy manually.";
+    els.catalogDot.className = "statusDot dotBad";
+  }
+});
+
+document.getElementById("wipeStorageBtn").addEventListener("click", () => {
+  localStorage.removeItem("itemMatcherCatalog");
+  loadCatalogFromStorageOrDefault();
+  rebuildCatalogAndCandidates();
+});
+
+/* ------------------------------
+   Init
+------------------------------ */
+
+loadCatalogFromStorageOrDefault();
+rebuildCatalogAndCandidates(); // also triggers compute
 </script>
 </body>
 </html>
