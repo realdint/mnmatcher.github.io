@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Item Parser + Fuzzy Match Total</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; line-height: 1.35; }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    .row { display: grid; gap: 12px; grid-template-columns: 1.1fr 0.9fr; align-items: start; }
+    textarea { width: 100%; min-height: 220px; padding: 12px; border-radius: 10px; border: 1px solid #333; background: #111; color: #eee; resize: vertical; }
+    .panel { border: 1px solid #333; border-radius: 12px; padding: 12px; background: #0e0e0e; }
+    .controls { display: grid; gap: 10px; }
+    .control { display: grid; gap: 6px; }
+    label { font-size: 13px; color: #bbb; }
+    input[type="range"] { width: 100%; }
+    .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+    button {
+      border: 1px solid #333; background: #161616; color: #eee;
+      padding: 10px 12px; border-radius: 10px; cursor: pointer;
+    }
+    button:hover { border-color: #555; }
+    .totals { margin-top: 12px; font-size: 14px; color: #ddd; }
+    .totals strong { font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border-bottom: 1px solid #2a2a2a; padding: 10px 8px; text-align: left; vertical-align: top; }
+    th { font-size: 12px; color: #aaa; font-weight: 600; }
+    td { font-size: 13px; color: #e6e6e6; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { color: #9a9a9a; }
+    .bad { color: #ff8a8a; }
+    .good { color: #86ffb3; }
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid #333; background: #121212; font-size: 12px;
+    }
+    .small { font-size: 12px; }
+    .hint { margin-top: 8px; color: #9a9a9a; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Fuzzy item matcher (Levenshtein) → totals</h1>
+
+  <div class="row">
+    <div>
+      <textarea id="input" spellcheck="false" placeholder='Type things like:
+2 item1, 9 itm2, 23 item 2, 2932 item whatever
+
+Also works with newlines:
+5 iron
+12 itn2
+'></textarea>
+      <div class="hint">
+        Parsing rule: split on commas/newlines/semicolons. Each chunk can start with a number (quantity). If no quantity, assumes 1.
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="controls">
+        <div class="control">
+          <label for="threshold">Match strictness (max normalized distance): <span id="thresholdLabel" class="mono"></span></label>
+          <input id="threshold" type="range" min="0.05" max="0.80" step="0.01" value="0.35" />
+          <div class="small muted">
+            Lower = stricter (fewer false matches). Higher = more forgiving (more “best guess”).
+          </div>
+        </div>
+
+        <div class="control">
+          <label for="topK">Show top suggestions for unmatched:</label>
+          <input id="topK" type="range" min="0" max="5" step="1" value="3" />
+          <div class="small muted">0 = don’t show suggestions.</div>
+        </div>
+
+        <div class="btns">
+          <button id="computeBtn">Compute</button>
+          <button id="exampleBtn">Load example</button>
+          <button id="clearBtn">Clear</button>
+        </div>
+
+        <div class="totals">
+          <div>Grand total: <strong id="grandTotal">$0.00</strong></div>
+          <div class="muted small">Matched lines: <span id="matchedCount">0</span> • Unmatched lines: <span id="unmatchedCount">0</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <table id="table">
+    <thead>
+      <tr>
+        <th>Input chunk</th>
+        <th>Qty</th>
+        <th>Interpreted name</th>
+        <th>Matched item</th>
+        <th>Unit price</th>
+        <th>Line total</th>
+        <th>Distance</th>
+        <th>Notes / suggestions</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+<script>
+/**
+ * 1) DEFINE YOUR ITEM DATABASE HERE
+ *    - priceCents avoids float issues
+ *    - aliases are what users might type
+ */
+const items = [
+  { name: "Item 1", priceCents: 1250, aliases: ["item1", "itm1", "it1", "one"] },
+  { name: "Item 2", priceCents: 3999, aliases: ["item2", "itm2", "it 2", "two", "itn2"] },
+  { name: "Iron",   priceCents: 250,  aliases: ["fe", "iron bar", "ironbar", "irn"] },
+  { name: "Gold",   priceCents: 900,  aliases: ["au", "gld", "gold bar", "goldbar"] },
+  { name: "Coal",   priceCents: 75,   aliases: ["charcoal", "cl", "kol"] },
+];
+
+/** Normalize for matching */
+function normalize(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+/** Fast-ish Levenshtein (two-row DP) */
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const alen = a.length, blen = b.length;
+  if (alen === 0) return blen;
+  if (blen === 0) return alen;
+
+  // Ensure b is the shorter one to minimize memory? (optional)
+  // We'll keep as-is but use two rows.
+  let prev = new Array(blen + 1);
+  let curr = new Array(blen + 1);
+
+  for (let j = 0; j <= blen; j++) prev[j] = j;
+
+  for (let i = 1; i <= alen; i++) {
+    curr[0] = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= blen; j++) {
+      const cost = (ca === b.charCodeAt(j - 1)) ? 0 : 1;
+      const del = prev[j] + 1;
+      const ins = curr[j - 1] + 1;
+      const sub = prev[j - 1] + cost;
+      curr[j] = Math.min(del, ins, sub);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[blen];
+}
+
+function formatMoney(cents) {
+  const sign = cents < 0 ? "-" : "";
+  const abs = Math.abs(cents);
+  const dollars = Math.floor(abs / 100);
+  const rem = abs % 100;
+  return `${sign}$${dollars.toLocaleString("en-US")}.${String(rem).padStart(2, "0")}`;
+}
+
+/** Build candidates: every item name + alias maps back to canonical item */
+function buildCandidates(items) {
+  const candidates = [];
+  for (const it of items) {
+    const all = [it.name, ...(it.aliases || [])];
+    for (const raw of all) {
+      candidates.push({
+        canonical: it.name,
+        priceCents: it.priceCents,
+        candidateRaw: raw,
+        candidateNorm: normalize(raw),
+      });
+    }
+  }
+  return candidates;
+}
+const candidates = buildCandidates(items);
+
+/**
+ * Match query -> best canonical item by min normalized distance.
+ * Returns:
+ *  { ok, canonical, priceCents, usedAlias, distance, normDistance, top[] }
+ */
+function matchItem(query, topK) {
+  const qNorm = normalize(query);
+  if (!qNorm) {
+    return { ok: false, reason: "Empty name", top: [] };
+  }
+
+  let best = null;
+  const scored = [];
+
+  for (const c of candidates) {
+    const dist = levenshtein(qNorm, c.candidateNorm);
+    const denom = Math.max(qNorm.length, c.candidateNorm.length) || 1;
+    const normDist = dist / denom;
+
+    const rec = {
+      canonical: c.canonical,
+      priceCents: c.priceCents,
+      usedAlias: c.candidateRaw,
+      distance: dist,
+      normDistance: normDist,
+    };
+    scored.push(rec);
+
+    if (!best || normDist < best.normDistance) {
+      best = rec;
+    }
+  }
+
+  scored.sort((a, b) => a.normDistance - b.normDistance);
+
+  // Collapse duplicates by canonical, keeping best alias per canonical
+  const uniqueTop = [];
+  const seen = new Set();
+  for (const s of scored) {
+    if (seen.has(s.canonical)) continue;
+    seen.add(s.canonical);
+    uniqueTop.push(s);
+    if (uniqueTop.length >= topK) break;
+  }
+
+  return {
+    ok: true,
+    ...best,
+    top: uniqueTop,
+  };
+}
+
+/** Parse chunks like "2 item1" or "9 itm2" or "item 2" */
+function parseInput(text) {
+  const chunks = String(text)
+    .split(/[\n,;]+/g)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const entries = [];
+
+  for (const chunk of chunks) {
+    // Quantity first (supports "2x item", "2 * item", "2 item", "2.5 item")
+    // If no leading number => qty=1, name=chunk
+    const m = chunk.match(/^\s*(\d+(?:\.\d+)?)\s*(?:x|\*|\u00D7)?\s*(.+?)\s*$/i);
+    let qty = 1;
+    let namePart = chunk;
+
+    if (m) {
+      // Only treat it as qty+name if namePart isn't empty
+      const q = Number(m[1]);
+      const np = (m[2] || "").trim();
+      if (Number.isFinite(q) && q > 0 && np.length > 0) {
+        qty = q;
+        namePart = np;
+      }
+    }
+
+    entries.push({ raw: chunk, qty, namePart });
+  }
+
+  return entries;
+}
+
+function compute() {
+  const inputEl = document.getElementById("input");
+  const threshold = Number(document.getElementById("threshold").value);
+  const topK = Number(document.getElementById("topK").value);
+
+  document.getElementById("thresholdLabel").textContent = threshold.toFixed(2);
+
+  const tbody = document.getElementById("tbody");
+  tbody.innerHTML = "";
+
+  const entries = parseInput(inputEl.value);
+
+  let grandTotal = 0;
+  let matchedCount = 0;
+  let unmatchedCount = 0;
+
+  for (const e of entries) {
+    const m = matchItem(e.namePart, Math.max(0, topK));
+
+    let matched = false;
+    let canonical = "";
+    let usedAlias = "";
+    let unitCents = 0;
+    let lineCents = 0;
+    let distText = "";
+    let notes = "";
+
+    if (m.ok && m.normDistance <= threshold) {
+      matched = true;
+      canonical = m.canonical;
+      usedAlias = m.usedAlias;
+      unitCents = m.priceCents;
+      lineCents = Math.round(e.qty * unitCents);
+      grandTotal += lineCents;
+      matchedCount++;
+
+      const quality = m.normDistance <= threshold * 0.5 ? "good" : "muted";
+      distText = `<span class="${quality} mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`;
+      notes = `Matched via: <span class="pill mono">${escapeHtml(usedAlias)}</span>`;
+    } else {
+      unmatched = true;
+      unmatchedCount++;
+
+      distText = m.ok
+        ? `<span class="bad mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`
+        : `<span class="bad mono">—</span>`;
+
+      if (!m.ok) {
+        notes = `<span class="bad">Couldn’t parse a name.</span>`;
+      } else if (topK > 0 && m.top?.length) {
+        const sug = m.top
+          .map(s => `${escapeHtml(s.canonical)} <span class="muted mono">(${s.normDistance.toFixed(3)})</span>`)
+          .join("<br/>");
+        notes = `<span class="bad">Unmatched (too far).</span><br/><span class="muted">Suggestions:</span><br/>${sug}`;
+      } else {
+        notes = `<span class="bad">Unmatched (too far).</span>`;
+      }
+    }
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${escapeHtml(e.raw)}</td>
+      <td class="mono">${escapeHtml(String(e.qty))}</td>
+      <td>${escapeHtml(e.namePart)}</td>
+      <td>${matched ? `<span class="good">${escapeHtml(canonical)}</span>` : `<span class="bad">—</span>`}</td>
+      <td class="mono">${matched ? formatMoney(unitCents) : `<span class="muted">—</span>`}</td>
+      <td class="mono">${matched ? formatMoney(lineCents) : `<span class="muted">—</span>`}</td>
+      <td>${distText}</td>
+      <td>${notes}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  document.getElementById("grandTotal").textContent = formatMoney(grandTotal);
+  document.getElementById("matchedCount").textContent = String(matchedCount);
+  document.getElementById("unmatchedCount").textContent = String(unmatchedCount);
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+document.getElementById("computeBtn").addEventListener("click", compute);
+document.getElementById("threshold").addEventListener("input", compute);
+document.getElementById("topK").addEventListener("input", compute);
+
+document.getElementById("exampleBtn").addEventListener("click", () => {
+  document.getElementById("input").value =
+`2 item1, 9 itm2, 23 item 2, 2932 item whatever
+5 iron
+12 itn2
+1 gold bar
+3 charcoal`;
+  compute();
+});
+
+document.getElementById("clearBtn").addEventListener("click", () => {
+  document.getElementById("input").value = "";
+  compute();
+});
+
+// Initialize label and compute once
+compute();
+</script>
+</body>
+</html>
