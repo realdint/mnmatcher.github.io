@@ -33,7 +33,12 @@
     }
     button:hover { border-color: #555; }
     .totals { margin-top: 12px; font-size: 14px; color: #ddd; }
-    .totals strong { font-size: 18px; }
+    /* ✅ Bigger grand total */
+    .totals strong {
+      font-size: 30px;
+      letter-spacing: 0.2px;
+    }
+
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     th, td { border-bottom: 1px solid #2a2a2a; padding: 10px 8px; text-align: left; vertical-align: top; }
     th { font-size: 12px; color: #aaa; font-weight: 600; }
@@ -63,11 +68,11 @@
     <div class="panel">
       <h2>Input</h2>
       <textarea id="input" spellcheck="false" placeholder='Type things like:
-2 item1, 9 itm2, 23 item 2, 2932 item whatever
+2 void, 9 ce, 23 gold retros, 2932 something
 
 Also works with newlines:
-5 iron
-12 itn2
+5 ember
+12 gs
 '></textarea>
       <div class="hint">
         Auto-updates as you type. Parsing: split on commas/newlines/semicolons. Each chunk can start with a number (quantity). If no quantity, assumes 1.
@@ -109,7 +114,7 @@ Also works with newlines:
       <h2>Price table (editable)</h2>
       <div class="statusLine">
         <span class="statusDot" id="catalogDot"></span>
-        <span class="small" id="catalogStatus" class="muted"></span>
+        <span class="small" id="catalogStatus"></span>
         <span class="pill mono" id="catalogCountPill"></span>
       </div>
 
@@ -117,7 +122,7 @@ Also works with newlines:
         Two supported formats (auto-detected):
         <br/>• <span class="mono">JSON</span>: array of <span class="mono">{ "name", "price", "aliases":[...] }</span>
         <br/>• <span class="mono">Pipe text</span> (one per line): <span class="mono">Name | 12.34 | alias1; alias2; alias3</span>
-        <br/>Price can be dollars (12.34) or cents (1234) if you set <span class="mono">priceCents</span> in JSON.
+        <br/>Prices here are treated as <b>whole numbers</b> (like Roblox value). If you want dollars, use decimals (12.34).
       </div>
 
       <textarea id="catalog" spellcheck="false"></textarea>
@@ -165,18 +170,18 @@ Also works with newlines:
 
 <script>
 /* ------------------------------
-   Defaults
+   Defaults (YOUR LIST)
 ------------------------------ */
 
 const defaultCatalogText = `[
   { "name": "Void aura", "price": 6800000, "aliases": ["void", "va", "voidaura", "v"] },
   { "name": "Cursed Energy", "price": 950000, "aliases": ["curse", "cursed", "ce", "c"] },
-  { "name": "Gold Retros",   "price": 3300000,  "aliases": ["gold", "gr", "gold retros", "gret"] },
-  { "name": "Ember Aura",   "price": 600000,  "aliases": ["ember", "e", "e aura"] },
-  { "name": "Red Retros",   "price": 0.75,  "aliases": ["rr", "reds", "red retros", "r"] },
-  { "name": "Red Shoes",   "price": 0.75,  "aliases": ["charcoal", "cl", "kol"] },
-  { "name": "Godspeed",   "price": 0.75,  "aliases": ["godspeed", "gs", "god"] },
-  { "name": "Thanos Gauntlent",   "price": 0.75,  "aliases": ["thanos", "tg", "gauntlet", "thanos"] }
+  { "name": "Gold Retros", "price": 3300000, "aliases": ["gold", "gr", "gold retros", "gret"] },
+  { "name": "Ember Aura", "price": 600000, "aliases": ["ember", "e", "e aura"] },
+  { "name": "Red Retros", "price": 245000, "aliases": ["rr", "reds", "red retros", "r"] },
+  { "name": "Red Shoes", "price": 1200000, "aliases": ["red shoes", "shoes", "rs"] },
+  { "name": "Godspeed", "price": 35000000, "aliases": ["godspeed", "gs", "god"] },
+  { "name": "Thanos Gauntlent", "price": 225000, "aliases": ["thanos", "tg", "gauntlet", "thanos"] }
 ]`;
 
 /* ------------------------------
@@ -216,12 +221,11 @@ function levenshtein(a, b) {
   return prev[blen];
 }
 
-function formatMoney(cents) {
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  const dollars = Math.floor(abs / 100);
-  const rem = abs % 100;
-  return `${sign}$${dollars.toLocaleString("en-US")}.${String(rem).padStart(2, "0")}`;
+// ✅ For Roblox-ish big numbers: add commas, no "$"
+function formatValue(n) {
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(Math.round(n));
+  return sign + abs.toLocaleString("en-US");
 }
 
 function escapeHtml(s) {
@@ -245,32 +249,22 @@ function debounce(fn, ms) {
    Catalog parsing (JSON or pipe)
 ------------------------------ */
 
-function parseMoneyToCents(v) {
-  // Accept: number, "12.34", "12", "$12.34"
-  if (typeof v === "number") {
-    // Treat 12.34 as dollars
-    return Math.round(v * 100);
-  }
+// NOTE: prices are treated as "value units" (integers).
+// If someone enters decimals (12.34), we keep them, but totals are rounded.
+function parsePriceToNumber(v) {
+  if (typeof v === "number") return v;
   const s = String(v).trim();
   if (!s) return null;
-
-  // If looks like integer and large-ish, assume dollars anyway unless explicitly "priceCents".
-  // For JSON you can set priceCents to avoid ambiguity.
-  const cleaned = s.replace(/[\$,]/g, "");
+  const cleaned = s.replace(/[,\s]/g, "");
   if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null;
-
-  if (cleaned.includes(".")) {
-    return Math.round(parseFloat(cleaned) * 100);
-  }
-  // no decimal
-  return Math.round(parseInt(cleaned, 10) * 100);
+  return Number(cleaned);
 }
 
 function parseCatalog(text) {
   const raw = String(text || "").trim();
   if (!raw) return { ok: false, items: [], error: "Catalog is empty." };
 
-  // Try JSON first if it starts like JSON
+  // JSON
   if (raw.startsWith("[") || raw.startsWith("{")) {
     try {
       const obj = JSON.parse(raw);
@@ -280,25 +274,14 @@ function parseCatalog(text) {
       const out = [];
       for (const it of arr) {
         if (!it || typeof it !== "object") continue;
-
         const name = String(it.name ?? "").trim();
         if (!name) continue;
 
-        let priceCents = null;
-
-        if (it.priceCents != null) {
-          const pc = Number(it.priceCents);
-          if (Number.isFinite(pc)) priceCents = Math.round(pc);
-        } else if (it.price != null) {
-          priceCents = parseMoneyToCents(it.price);
-        } else if (it.priceDollars != null) {
-          priceCents = parseMoneyToCents(it.priceDollars);
-        }
-
-        if (!Number.isFinite(priceCents) || priceCents == null) continue;
+        const price = parsePriceToNumber(it.price ?? it.value ?? it.priceNumber);
+        if (!Number.isFinite(price) || price == null) continue;
 
         const aliases = Array.isArray(it.aliases) ? it.aliases.map(a => String(a).trim()).filter(Boolean) : [];
-        out.push({ name, priceCents, aliases });
+        out.push({ name, price, aliases });
       }
 
       if (out.length === 0) return { ok: false, items: [], error: "No valid items found in JSON." };
@@ -308,7 +291,7 @@ function parseCatalog(text) {
     }
   }
 
-  // Pipe format: Name | price | alias1; alias2; alias3
+  // Pipe: Name | price | alias1; alias2
   const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const out = [];
   for (const line of lines) {
@@ -317,22 +300,18 @@ function parseCatalog(text) {
     if (parts.length < 2) continue;
 
     const name = parts[0];
-    const priceStr = parts[1];
-    const priceCents = parseMoneyToCents(priceStr);
-    if (!name || !Number.isFinite(priceCents) || priceCents == null) continue;
+    const price = parsePriceToNumber(parts[1]);
+    if (!name || !Number.isFinite(price) || price == null) continue;
 
     let aliases = [];
     if (parts[2]) {
-      aliases = parts[2]
-        .split(/[,;]+/)
-        .map(a => a.trim())
-        .filter(Boolean);
+      aliases = parts[2].split(/[,;]+/).map(a => a.trim()).filter(Boolean);
     }
-    out.push({ name, priceCents, aliases });
+    out.push({ name, price, aliases });
   }
 
   if (out.length === 0) {
-    return { ok: false, items: [], error: "No valid items found. Use JSON or: Name | 12.34 | alias1; alias2" };
+    return { ok: false, items: [], error: "No valid items found. Use JSON or: Name | 12345 | alias1; alias2" };
   }
   return { ok: true, items: out, format: "pipe" };
 }
@@ -350,7 +329,7 @@ function buildCandidates(items) {
       if (!cn) continue;
       candidates.push({
         canonical: it.name,
-        priceCents: it.priceCents,
+        price: it.price,
         candidateRaw: raw,
         candidateNorm: cn,
       });
@@ -374,13 +353,12 @@ function matchItem(query, candidates, topK) {
 
     const rec = {
       canonical: c.canonical,
-      priceCents: c.priceCents,
+      price: c.price,
       usedAlias: c.candidateRaw,
       distance: dist,
       normDistance: normDist,
     };
     scored.push(rec);
-
     if (!best || normDist < best.normDistance) best = rec;
   }
 
@@ -410,7 +388,6 @@ function parseInput(text) {
 
   const entries = [];
   for (const chunk of chunks) {
-    // Supports: "2 item", "2x item", "2 * item", "2× item", "2.5 item"
     const m = chunk.match(/^\s*(\d+(?:\.\d+)?)\s*(?:x|\*|\u00D7)?\s*(.+?)\s*$/i);
     let qty = 1;
     let namePart = chunk;
@@ -423,7 +400,6 @@ function parseInput(text) {
         namePart = np;
       }
     }
-
     entries.push({ raw: chunk, qty, namePart });
   }
   return entries;
@@ -475,7 +451,7 @@ function rebuildCatalogAndCandidates() {
     candidates = [];
     catalogOk = false;
     setCatalogStatus(false, parsed.error, 0);
-    compute(); // still compute; will show unmatched
+    compute();
     return;
   }
 
@@ -505,8 +481,7 @@ function compute() {
   let matchedCount = 0;
   let unmatchedCount = 0;
 
-  // summary accumulator by canonical
-  const summary = new Map(); // canonical -> {qty, unitCents, subtotalCents}
+  const summary = new Map(); // canonical -> {qty, unitPrice, subtotal}
 
   for (const e of entries) {
     const m = matchItem(e.namePart, candidates, Math.max(0, topK));
@@ -514,8 +489,8 @@ function compute() {
     let matched = false;
     let canonical = "";
     let usedAlias = "";
-    let unitCents = 0;
-    let lineCents = 0;
+    let unitPrice = 0;
+    let lineTotal = 0;
     let distHtml = "";
     let notesHtml = "";
 
@@ -523,22 +498,24 @@ function compute() {
       matched = true;
       canonical = m.canonical;
       usedAlias = m.usedAlias;
-      unitCents = m.priceCents;
-      lineCents = Math.round(e.qty * unitCents);
-      grandTotal += lineCents;
+      unitPrice = m.price;
+      lineTotal = e.qty * unitPrice;
+
+      grandTotal += lineTotal;
       matchedCount++;
 
       const quality = m.normDistance <= threshold * 0.5 ? "good" : "muted";
       distHtml = `<span class="${quality} mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`;
       notesHtml = `Matched via: <span class="pill mono">${escapeHtml(usedAlias)}</span>`;
 
-      const prev = summary.get(canonical) ?? { qty: 0, unitCents, subtotalCents: 0 };
+      const prev = summary.get(canonical) ?? { qty: 0, unitPrice, subtotal: 0 };
       prev.qty += e.qty;
-      prev.unitCents = unitCents;
-      prev.subtotalCents += lineCents;
+      prev.unitPrice = unitPrice;
+      prev.subtotal += lineTotal;
       summary.set(canonical, prev);
     } else {
       unmatchedCount++;
+
       if (!m.ok) {
         distHtml = `<span class="bad mono">—</span>`;
         notesHtml = `<span class="bad">${escapeHtml(m.reason || "Unmatched")}</span>`;
@@ -546,7 +523,7 @@ function compute() {
         distHtml = `<span class="bad mono">${m.normDistance.toFixed(3)}</span> <span class="muted mono">(${m.distance})</span>`;
         if (topK > 0 && m.top?.length) {
           const sug = m.top.map(s =>
-            `${escapeHtml(s.canonical)} <span class="muted mono">(${s.normDistance.toFixed(3)})</span> <span class="muted">(${formatMoney(s.priceCents)})</span>`
+            `${escapeHtml(s.canonical)} <span class="muted mono">(${s.normDistance.toFixed(3)})</span> <span class="muted">(${formatValue(s.price)})</span>`
           ).join("<br/>");
           notesHtml = `<span class="bad">Unmatched (too far).</span><br/><span class="muted">Suggestions:</span><br/>${sug}`;
         } else {
@@ -561,17 +538,16 @@ function compute() {
       <td class="mono">${escapeHtml(String(e.qty))}</td>
       <td>${escapeHtml(e.namePart)}</td>
       <td>${matched ? `<span class="good">${escapeHtml(canonical)}</span>` : `<span class="bad">—</span>`}</td>
-      <td class="mono">${matched ? formatMoney(unitCents) : `<span class="muted">—</span>`}</td>
-      <td class="mono">${matched ? formatMoney(lineCents) : `<span class="muted">—</span>`}</td>
+      <td class="mono">${matched ? formatValue(unitPrice) : `<span class="muted">—</span>`}</td>
+      <td class="mono">${matched ? formatValue(lineTotal) : `<span class="muted">—</span>`}</td>
       <td>${distHtml}</td>
       <td>${notesHtml}</td>
     `;
     els.tbody.appendChild(tr);
   }
 
-  // Render summary
-  const sorted = Array.from(summary.entries())
-    .sort((a, b) => b[1].subtotalCents - a[1].subtotalCents);
+  // Summary table
+  const sorted = Array.from(summary.entries()).sort((a, b) => b[1].subtotal - a[1].subtotal);
 
   if (sorted.length === 0) {
     const tr = document.createElement("tr");
@@ -583,14 +559,14 @@ function compute() {
       tr.innerHTML = `
         <td>${escapeHtml(name)}</td>
         <td class="mono">${escapeHtml(String(s.qty))}</td>
-        <td class="mono">${formatMoney(s.unitCents)}</td>
-        <td class="mono">${formatMoney(s.subtotalCents)}</td>
+        <td class="mono">${formatValue(s.unitPrice)}</td>
+        <td class="mono">${formatValue(s.subtotal)}</td>
       `;
       els.summaryBody.appendChild(tr);
     }
   }
 
-  els.grandTotal.textContent = formatMoney(grandTotal);
+  els.grandTotal.textContent = formatValue(grandTotal);
   els.matchedCount.textContent = String(matchedCount);
   els.unmatchedCount.textContent = String(unmatchedCount);
 }
@@ -612,11 +588,11 @@ els.catalog.addEventListener("input", catalogDebounced);
 
 document.getElementById("exampleBtn").addEventListener("click", () => {
   els.input.value =
-`2 item1, 9 itm2, 23 item 2, 2932 item whatever
-5 iron
-12 itn2
-1 gold bar
-3 charcoal`;
+`2 void, 9 ce, 23 gold retros, 3 ember
+1 red retros
+2 red shoes
+1 god
+4 thanos`;
   compute();
 });
 
@@ -654,7 +630,7 @@ document.getElementById("wipeStorageBtn").addEventListener("click", () => {
 ------------------------------ */
 
 loadCatalogFromStorageOrDefault();
-rebuildCatalogAndCandidates(); // also triggers compute
+rebuildCatalogAndCandidates();
 </script>
 </body>
 </html>
